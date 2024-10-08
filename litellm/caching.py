@@ -10,6 +10,7 @@
 import ast
 import asyncio
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -17,7 +18,7 @@ import time
 import traceback
 from datetime import timedelta
 from enum import Enum
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, List, Literal, Optional, Tuple, Union
 
 from openai._models import BaseModel as OpenAIObject
 
@@ -105,9 +106,6 @@ class InMemoryCache(BaseCache):
                 # This can occur when an object is referenced by another object, but the reference is never removed.
 
     def set_cache(self, key, value, **kwargs):
-        print_verbose(
-            "InMemoryCache: set_cache. current size= {}".format(len(self.cache_dict))
-        )
         if len(self.cache_dict) >= self.max_size_in_memory:
             # only evict when cache is full
             self.evict_cache()
@@ -248,7 +246,8 @@ class RedisCache(BaseCache):
             self.redis_flush_size = redis_flush_size
         self.redis_version = "Unknown"
         try:
-            self.redis_version = self.redis_client.info()["redis_version"]
+            if not inspect.iscoroutinefunction(self.redis_client):
+                self.redis_version = self.redis_client.info()["redis_version"]  # type: ignore
         except Exception:
             pass
 
@@ -269,7 +268,8 @@ class RedisCache(BaseCache):
 
         ### SYNC HEALTH PING ###
         try:
-            self.redis_client.ping()
+            if hasattr(self.redis_client, "ping"):
+                self.redis_client.ping()  # type: ignore
         except Exception as e:
             verbose_logger.error(
                 "Error connecting to Sync Redis client", extra={"error": str(e)}
@@ -311,7 +311,7 @@ class RedisCache(BaseCache):
         _redis_client = self.redis_client
         start_time = time.time()
         try:
-            result = _redis_client.incr(name=key, amount=value)
+            result: int = _redis_client.incr(name=key, amount=value)  # type: ignore
 
             if ttl is not None:
                 # check if key already has ttl, if not -> set ttl
@@ -455,7 +455,9 @@ class RedisCache(BaseCache):
                     value,
                 )
 
-    async def async_set_cache_pipeline(self, cache_list, ttl=None, **kwargs):
+    async def async_set_cache_pipeline(
+        self, cache_list: List[Tuple[Any, Any]], ttl: Optional[float] = None, **kwargs
+    ):
         """
         Use Redis Pipelines for bulk write operations
         """
@@ -466,6 +468,8 @@ class RedisCache(BaseCache):
 
         _redis_client: Redis = self.init_async_client()  # type: ignore
         start_time = time.time()
+
+        ttl = ttl or kwargs.get("ttl", None)
 
         print_verbose(
             f"Set Async Redis Cache: key list: {cache_list}\nttl={ttl}, redis_version={self.redis_version}"
@@ -482,11 +486,10 @@ class RedisCache(BaseCache):
                         )
                         json_cache_value = json.dumps(cache_value)
                         # Set the value with a TTL if it's provided.
-
+                        _td: Optional[timedelta] = None
                         if ttl is not None:
-                            pipe.setex(cache_key, ttl, json_cache_value)
-                        else:
-                            pipe.set(cache_key, json_cache_value)
+                            _td = timedelta(seconds=ttl)
+                        pipe.set(cache_key, json_cache_value, ex=_td)
                     # Execute the pipeline and return the results.
                     results = await pipe.execute()
 
@@ -564,7 +567,7 @@ class RedisCache(BaseCache):
                 f"Set ASYNC Redis Cache: key: {key}\nValue {value}\nttl={ttl}"
             )
             try:
-                await redis_client.sadd(key, *value)
+                await redis_client.sadd(key, *value)  # type: ignore
                 if ttl is not None:
                     _td = timedelta(seconds=ttl)
                     await redis_client.expire(key, _td)
@@ -715,7 +718,7 @@ class RedisCache(BaseCache):
             for cache_key in key_list:
                 cache_key = self.check_and_fix_namespace(key=cache_key)
                 _keys.append(cache_key)
-            results = self.redis_client.mget(keys=_keys)
+            results: List = self.redis_client.mget(keys=_keys)  # type: ignore
 
             # Associate the results back with their keys.
             # 'results' is a list of values corresponding to the order of keys in 'key_list'.
@@ -845,7 +848,7 @@ class RedisCache(BaseCache):
         print_verbose("Pinging Sync Redis Cache")
         start_time = time.time()
         try:
-            response = self.redis_client.ping()
+            response: bool = self.redis_client.ping()  # type: ignore
             print_verbose(f"Redis Cache PING: {response}")
             ## LOGGING ##
             end_time = time.time()
@@ -914,8 +917,8 @@ class RedisCache(BaseCache):
         async with _redis_client as redis_client:
             await redis_client.delete(*keys)
 
-    def client_list(self):
-        client_list = self.redis_client.client_list()
+    def client_list(self) -> List:
+        client_list: List = self.redis_client.client_list()  # type: ignore
         return client_list
 
     def info(self):
@@ -1835,7 +1838,6 @@ class DualCache(BaseCache):
     def set_cache(self, key, value, local_only: bool = False, **kwargs):
         # Update both Redis and in-memory cache
         try:
-            print_verbose(f"set cache: key: {key}; value: {value}")
             if self.in_memory_cache is not None:
                 if "ttl" not in kwargs and self.default_in_memory_ttl is not None:
                     kwargs["ttl"] = self.default_in_memory_ttl
@@ -1873,7 +1875,6 @@ class DualCache(BaseCache):
     def get_cache(self, key, local_only: bool = False, **kwargs):
         # Try to fetch from in-memory cache first
         try:
-            print_verbose(f"get cache: cache key: {key}; local_only: {local_only}")
             result = None
             if self.in_memory_cache is not None:
                 in_memory_result = self.in_memory_cache.get_cache(key, **kwargs)
@@ -1906,7 +1907,6 @@ class DualCache(BaseCache):
             if self.in_memory_cache is not None:
                 in_memory_result = self.in_memory_cache.batch_get_cache(keys, **kwargs)
 
-                print_verbose(f"in_memory_result: {in_memory_result}")
                 if in_memory_result is not None:
                     result = in_memory_result
 
@@ -2191,14 +2191,38 @@ class Cache:
 
         Args:
             type (str, optional): The type of cache to initialize. Can be "local", "redis", "redis-semantic", "qdrant-semantic", "s3" or "disk". Defaults to "local".
+
+            # Redis Cache Args
             host (str, optional): The host address for the Redis cache. Required if type is "redis".
             port (int, optional): The port number for the Redis cache. Required if type is "redis".
             password (str, optional): The password for the Redis cache. Required if type is "redis".
+            namespace (str, optional): The namespace for the Redis cache. Required if type is "redis".
+            ttl (float, optional): The ttl for the Redis cache
+            redis_flush_size (int, optional): The number of keys to flush at a time. Defaults to 1000. Only used if batch redis set caching is used.
+            redis_startup_nodes (list, optional): The list of startup nodes for the Redis cache. Defaults to None.
+
+            # Qdrant Cache Args
             qdrant_api_base (str, optional): The url for your qdrant cluster. Required if type is "qdrant-semantic".
             qdrant_api_key (str, optional): The api_key for the local or cloud qdrant cluster.
             qdrant_collection_name (str, optional): The name for your qdrant collection. Required if type is "qdrant-semantic".
             similarity_threshold (float, optional): The similarity threshold for semantic-caching, Required if type is "redis-semantic" or "qdrant-semantic".
 
+            # Disk Cache Args
+            disk_cache_dir (str, optional): The directory for the disk cache. Defaults to None.
+
+            # S3 Cache Args
+            s3_bucket_name (str, optional): The bucket name for the s3 cache. Defaults to None.
+            s3_region_name (str, optional): The region name for the s3 cache. Defaults to None.
+            s3_api_version (str, optional): The api version for the s3 cache. Defaults to None.
+            s3_use_ssl (bool, optional): The use ssl for the s3 cache. Defaults to True.
+            s3_verify (bool, optional): The verify for the s3 cache. Defaults to None.
+            s3_endpoint_url (str, optional): The endpoint url for the s3 cache. Defaults to None.
+            s3_aws_access_key_id (str, optional): The aws access key id for the s3 cache. Defaults to None.
+            s3_aws_secret_access_key (str, optional): The aws secret access key for the s3 cache. Defaults to None.
+            s3_aws_session_token (str, optional): The aws session token for the s3 cache. Defaults to None.
+            s3_config (dict, optional): The config for the s3 cache. Defaults to None.
+
+            # Common Cache Args
             supported_call_types (list, optional): List of call types to cache for. Defaults to cache == on for all call types.
             **kwargs: Additional keyword arguments for redis.Redis() cache
 
@@ -2210,18 +2234,18 @@ class Cache:
         """
         if type == "redis":
             self.cache: BaseCache = RedisCache(
-                host,
-                port,
-                password,
-                redis_flush_size,
+                host=host,
+                port=port,
+                password=password,
+                redis_flush_size=redis_flush_size,
                 startup_nodes=redis_startup_nodes,
                 **kwargs,
             )
         elif type == "redis-semantic":
             self.cache = RedisSemanticCache(
-                host,
-                port,
-                password,
+                host=host,
+                port=port,
+                password=password,
                 similarity_threshold=similarity_threshold,
                 use_async=redis_semantic_cache_use_async,
                 embedding_model=redis_semantic_cache_embedding_model,
@@ -2601,6 +2625,11 @@ class Cache:
         try:
             if self.should_use_cache(*args, **kwargs) is not True:
                 return
+
+            # set default ttl if not set
+            if self.ttl is not None:
+                kwargs["ttl"] = self.ttl
+
             cache_list = []
             for idx, i in enumerate(kwargs["input"]):
                 preset_cache_key = self.get_cache_key(*args, **{**kwargs, "input": i})
@@ -2616,7 +2645,7 @@ class Cache:
                 self.cache, "async_set_cache_pipeline", None
             )
             if async_set_cache_pipeline:
-                await async_set_cache_pipeline(cache_list=cache_list)
+                await async_set_cache_pipeline(cache_list=cache_list, **kwargs)
             else:
                 tasks = []
                 for val in cache_list:

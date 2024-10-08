@@ -1,5 +1,6 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import Image from '@theme/IdealImage';
 
 # 📈 Prometheus metrics
 
@@ -138,7 +139,9 @@ Use this for LLM API Error monitoring and tracking remaining rate limits and tok
 | `litellm_llm_api_latency_metric`             | Latency (seconds) for just the LLM API call - tracked for labels `litellm_call_id`, `model`, `user_api_key`, `user_api_key_alias`, `user_api_team`, `user_api_team_alias` |
 
 ## Virtual Key - Budget, Rate Limit Metrics
+
 Metrics used to track LiteLLM Proxy Budgeting and Rate limiting logic
+
 | Metric Name          | Description                          |
 |----------------------|--------------------------------------|
 | `litellm_remaining_team_budget_metric`             | Remaining Budget for Team (A team created on LiteLLM) Labels: `"team_id", "team_alias"`|
@@ -167,11 +170,21 @@ litellm_settings:
 | `litellm_redis_fails`         | Number of failed redis calls    |
 | `litellm_self_latency`         | Histogram latency for successful litellm api call    |
 
-## 🔥 Community Maintained Grafana Dashboards 
+## **🔥 LiteLLM Maintained Grafana Dashboards **
 
-Link to Grafana Dashboards made by LiteLLM community 
+Link to Grafana Dashboards maintained by LiteLLM
 
 https://github.com/BerriAI/litellm/tree/main/cookbook/litellm_proxy_server/grafana_dashboard
+
+Here is a screenshot of the metrics you can monitor with the LiteLLM Grafana Dashboard
+
+
+<Image img={require('../../img/grafana_1.png')} />
+
+<Image img={require('../../img/grafana_2.png')} />
+
+<Image img={require('../../img/grafana_3.png')} />
+
 
 ## Deprecated Metrics 
 

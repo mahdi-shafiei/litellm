@@ -4,7 +4,7 @@ import os
 import time
 import traceback
 import types
-from typing import Any, Callable, Coroutine, Iterable, Literal, Optional, Union
+from typing import Any, Callable, Coroutine, Iterable, Literal, Optional, Union, cast
 
 import httpx
 import openai
@@ -30,8 +30,10 @@ from litellm.utils import (
 
 from ...types.llms.openai import *
 from ..base import BaseLLM
+from ..prompt_templates.common_utils import convert_content_list_to_str
 from ..prompt_templates.factory import custom_prompt, prompt_factory
 from .common_utils import drop_params_from_unprocessable_entity_error
+from .completion.utils import is_tokens_or_list_of_tokens
 
 
 class OpenAIError(Exception):
@@ -420,6 +422,35 @@ class OpenAITextCompletionConfig:
             and v is not None
         }
 
+    def _transform_prompt(
+        self,
+        messages: Union[List[AllMessageValues], List[OpenAITextCompletionUserMessage]],
+    ) -> AllPromptValues:
+        if len(messages) == 1:  # base case
+            message_content = messages[0].get("content")
+            if (
+                message_content
+                and isinstance(message_content, list)
+                and is_tokens_or_list_of_tokens(message_content)
+            ):
+                openai_prompt: AllPromptValues = cast(AllPromptValues, message_content)
+            else:
+                openai_prompt = ""
+                content = convert_content_list_to_str(
+                    cast(AllMessageValues, messages[0])
+                )
+                openai_prompt += content
+        else:
+            prompt_str_list: List[str] = []
+            for m in messages:
+                try:  # expect list of int/list of list of int to be a 1 message array only.
+                    content = convert_content_list_to_str(cast(AllMessageValues, m))
+                    prompt_str_list.append(content)
+                except Exception as e:
+                    raise e
+            openai_prompt = prompt_str_list
+        return openai_prompt
+
     def convert_to_chat_model_response_object(
         self,
         response_object: Optional[TextCompletionResponse] = None,
@@ -459,6 +490,7 @@ class OpenAITextCompletionConfig:
 
 
 class OpenAIChatCompletion(BaseLLM):
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -1135,7 +1167,7 @@ class OpenAIChatCompletion(BaseLLM):
         api_base: Optional[str] = None,
         client=None,
         aembedding=None,
-    ):
+    ) -> litellm.EmbeddingResponse:
         super().embedding()
         try:
             model = model
@@ -1151,7 +1183,7 @@ class OpenAIChatCompletion(BaseLLM):
             )
 
             if aembedding is True:
-                async_response = self.aembedding(
+                return self.aembedding(  # type: ignore
                     data=data,
                     input=input,
                     logging_obj=logging_obj,
@@ -1162,7 +1194,6 @@ class OpenAIChatCompletion(BaseLLM):
                     client=client,
                     max_retries=max_retries,
                 )
-                return async_response
 
             openai_client: OpenAI = self._get_openai_client(  # type: ignore
                 is_async=False,
@@ -1262,7 +1293,7 @@ class OpenAIChatCompletion(BaseLLM):
         model_response: Optional[litellm.utils.ImageResponse] = None,
         client=None,
         aimg_generation=None,
-    ):
+    ) -> litellm.ImageResponse:
         data = {}
         try:
             model = model
@@ -1272,8 +1303,7 @@ class OpenAIChatCompletion(BaseLLM):
                 raise OpenAIError(status_code=422, message="max retries must be an int")
 
             if aimg_generation is True:
-                response = self.aimage_generation(data=data, prompt=prompt, logging_obj=logging_obj, model_response=model_response, api_base=api_base, api_key=api_key, timeout=timeout, client=client, max_retries=max_retries)  # type: ignore
-                return response
+                return self.aimage_generation(data=data, prompt=prompt, logging_obj=logging_obj, model_response=model_response, api_base=api_base, api_key=api_key, timeout=timeout, client=client, max_retries=max_retries)  # type: ignore
 
             openai_client = self._get_openai_client(
                 is_async=False,
@@ -1417,7 +1447,7 @@ class OpenAIChatCompletion(BaseLLM):
     async def ahealth_check(
         self,
         model: Optional[str],
-        api_key: str,
+        api_key: Optional[str],
         timeout: float,
         mode: str,
         messages: Optional[list] = None,
@@ -1466,7 +1496,9 @@ class OpenAIChatCompletion(BaseLLM):
         elif mode == "audio_transcription":
             # Get the current directory of the file being run
             pwd = os.path.dirname(os.path.realpath(__file__))
-            file_path = os.path.join(pwd, "../tests/gettysburg.wav")
+            file_path = os.path.join(
+                pwd, "../../../tests/gettysburg.wav"
+            )  # proxy address
             audio_file = open(file_path, "rb")
             completion = await client.audio.transcriptions.with_raw_response.create(
                 file=audio_file,
@@ -1502,6 +1534,8 @@ class OpenAIChatCompletion(BaseLLM):
 
 
 class OpenAITextCompletion(BaseLLM):
+    openai_text_completion_global_config = OpenAITextCompletionConfig()
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -1518,7 +1552,7 @@ class OpenAITextCompletion(BaseLLM):
         model_response: ModelResponse,
         api_key: str,
         model: str,
-        messages: list,
+        messages: Union[List[AllMessageValues], List[OpenAITextCompletionUserMessage]],
         timeout: float,
         logging_obj: LiteLLMLoggingObj,
         optional_params: dict,
@@ -1531,23 +1565,17 @@ class OpenAITextCompletion(BaseLLM):
         organization: Optional[str] = None,
         headers: Optional[dict] = None,
     ):
-        super().completion()
         try:
             if headers is None:
                 headers = self.validate_environment(api_key=api_key)
             if model is None or messages is None:
                 raise OpenAIError(status_code=422, message="Missing model or messages")
 
-            if (
-                len(messages) > 0
-                and "content" in messages[0]
-                and isinstance(messages[0]["content"], list)
-            ):
-                prompt = messages[0]["content"]
-            else:
-                prompt = [message["content"] for message in messages]  # type: ignore
-
             # don't send max retries to the api, if set
+
+            prompt = self.openai_text_completion_global_config._transform_prompt(
+                messages
+            )
 
             data = {"model": model, "prompt": prompt, **optional_params}
             max_retries = data.pop("max_retries", 2)

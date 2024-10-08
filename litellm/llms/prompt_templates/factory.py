@@ -62,7 +62,11 @@ DEFAULT_USER_CONTINUE_MESSAGE = {
 # used to interweave assistant messages, to ensure user/assistant alternating
 DEFAULT_ASSISTANT_CONTINUE_MESSAGE = {
     "role": "assistant",
-    "content": "Please continue.",
+    "content": [
+        {
+            "text": "Please continue.",
+        }
+    ],
 }  # similar to autogen. Only used if `litellm.modify_params=True`.
 
 
@@ -2354,17 +2358,40 @@ def _convert_to_bedrock_tool_call_result(
     return content_block
 
 
+def _insert_assistant_continue_message(
+    messages: List[BedrockMessageBlock],
+    assistant_continue_message: Optional[str] = None,
+) -> List[BedrockMessageBlock]:
+    """
+    Add dummy message between user/tool result blocks.
+
+    Conversation blocks and tool result blocks cannot be provided in the same turn. Issue: https://github.com/BerriAI/litellm/issues/6053
+    """
+    if assistant_continue_message is not None:
+        messages.append(
+            BedrockMessageBlock(
+                role="assistant",
+                content=[BedrockContentBlock(text=assistant_continue_message)],
+            )
+        )
+    elif litellm.modify_params:
+        messages.append(BedrockMessageBlock(**DEFAULT_ASSISTANT_CONTINUE_MESSAGE))  # type: ignore
+    return messages
+
+
 def _bedrock_converse_messages_pt(
     messages: List,
     model: str,
     llm_provider: str,
     user_continue_message: Optional[dict] = None,
+    assistant_continue_message: Optional[str] = None,
 ) -> List[BedrockMessageBlock]:
     """
     Converts given messages from OpenAI format to Bedrock format
 
     - Roles must alternate b/w 'user' and 'model' (same as anthropic -> merge consecutive roles)
     - Please ensure that function response turn comes immediately after a function call turn
+    - Conversation blocks and tool result blocks cannot be provided in the same turn. Issue: https://github.com/BerriAI/litellm/issues/6053
     """
 
     contents: List[BedrockMessageBlock] = []
@@ -2408,15 +2435,57 @@ def _bedrock_converse_messages_pt(
                 user_content.append(_part)
 
             msg_i += 1
+        if user_content:
+            if len(contents) > 0 and contents[-1]["role"] == "user":
+                if (
+                    assistant_continue_message is not None
+                    or litellm.modify_params is True
+                ):
+                    # if last message was a 'user' message, then add a dummy assistant message (bedrock requires alternating roles)
+                    contents = _insert_assistant_continue_message(
+                        messages=contents,
+                        assistant_continue_message=assistant_continue_message,
+                    )
+                    contents.append(
+                        BedrockMessageBlock(role="user", content=user_content)
+                    )
+                else:
+                    verbose_logger.warning(
+                        "Potential consecutive user/tool blocks. Trying to merge. If error occurs, please set a 'assistant_continue_message' or set 'modify_params=True' to insert a dummy assistant message for bedrock calls."
+                    )
+                    contents[-1]["content"].extend(user_content)
+            else:
+                contents.append(BedrockMessageBlock(role="user", content=user_content))
 
         ## MERGE CONSECUTIVE TOOL CALL MESSAGES ##
+        tool_content: List[BedrockContentBlock] = []
         while msg_i < len(messages) and messages[msg_i]["role"] == "tool":
             tool_call_result = _convert_to_bedrock_tool_call_result(messages[msg_i])
 
-            user_content.append(tool_call_result)
+            tool_content.append(tool_call_result)
             msg_i += 1
-        if user_content:
-            contents.append(BedrockMessageBlock(role="user", content=user_content))
+        if tool_content:
+            # if last message was a 'user' message, then add a blank assistant message (bedrock requires alternating roles)
+            if len(contents) > 0 and contents[-1]["role"] == "user":
+                if (
+                    assistant_continue_message is not None
+                    or litellm.modify_params is True
+                ):
+                    # if last message was a 'user' message, then add a dummy assistant message (bedrock requires alternating roles)
+                    contents = _insert_assistant_continue_message(
+                        messages=contents,
+                        assistant_continue_message=assistant_continue_message,
+                    )
+                    contents.append(
+                        BedrockMessageBlock(role="user", content=tool_content)
+                    )
+                else:
+                    verbose_logger.warning(
+                        "Potential consecutive user/tool blocks. Trying to merge. If error occurs, please set a 'assistant_continue_message' or set 'modify_params=True' to insert a dummy assistant message for bedrock calls."
+                    )
+                    contents[-1]["content"].extend(tool_content)
+            else:
+                contents.append(BedrockMessageBlock(role="user", content=tool_content))
         assistant_content: List[BedrockContentBlock] = []
         ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
         while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
@@ -2554,7 +2623,9 @@ def _bedrock_tools_pt(tools: List) -> List[BedrockToolBlock]:
     """
     tool_block_list: List[BedrockToolBlock] = []
     for tool in tools:
-        parameters = tool.get("function", {}).get("parameters", None)
+        parameters = tool.get("function", {}).get(
+            "parameters", {"type": "object", "properties": {}}
+        )
         name = tool.get("function", {}).get("name", "")
 
         # related issue: https://github.com/BerriAI/litellm/issues/5007
@@ -2643,7 +2714,7 @@ def custom_prompt(
     final_prompt_value: str = "",
     bos_token: str = "",
     eos_token: str = "",
-):
+) -> str:
     prompt = bos_token + initial_prompt_value
     bos_open = True
     ## a bos token is at the start of a system / human message
