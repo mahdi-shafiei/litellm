@@ -16,6 +16,7 @@ In each method it will call the appropriate method from caching.py
 
 import asyncio
 import datetime
+import inspect
 import threading
 from typing import (
     TYPE_CHECKING,
@@ -511,7 +512,16 @@ class LLMCachingHandler:
         model: str,
         args: Tuple[Any, ...],
         custom_llm_provider: Optional[str] = None,
-    ) -> Optional[Any]:
+    ) -> Optional[
+        Union[
+            ModelResponse,
+            TextCompletionResponse,
+            EmbeddingResponse,
+            RerankResponse,
+            TranscriptionResponse,
+            CustomStreamWrapper,
+        ]
+    ]:
         """
         Internal method to process the cached result
 
@@ -632,7 +642,7 @@ class LLMCachingHandler:
             logging_obj=logging_obj,
         )
 
-    async def _async_set_cache(
+    async def async_set_cache(
         self,
         result: Any,
         original_function: Callable,
@@ -653,7 +663,7 @@ class LLMCachingHandler:
         Raises:
             None
         """
-        args = args or ()
+        kwargs.update(convert_args_to_kwargs(result, original_function, kwargs, args))
         if litellm.cache is None:
             return
         # [OPTIONAL] ADD TO CACHE
@@ -675,24 +685,24 @@ class LLMCachingHandler:
                     )  # s3 doesn't support bulk writing. Exclude.
                 ):
                     asyncio.create_task(
-                        litellm.cache.async_add_cache_pipeline(result, *args, **kwargs)
+                        litellm.cache.async_add_cache_pipeline(result, **kwargs)
                     )
                 elif isinstance(litellm.cache.cache, S3Cache):
                     threading.Thread(
                         target=litellm.cache.add_cache,
-                        args=(result,) + args,
+                        args=(result,),
                         kwargs=kwargs,
                     ).start()
                 else:
                     asyncio.create_task(
-                        litellm.cache.async_add_cache(result.json(), *args, **kwargs)
+                        litellm.cache.async_add_cache(
+                            result.model_dump_json(), **kwargs
+                        )
                     )
             else:
-                asyncio.create_task(
-                    litellm.cache.async_add_cache(result, *args, **kwargs)
-                )
+                asyncio.create_task(litellm.cache.async_add_cache(result, **kwargs))
 
-    def _sync_set_cache(
+    def sync_set_cache(
         self,
         result: Any,
         kwargs: Dict[str, Any],
@@ -701,14 +711,16 @@ class LLMCachingHandler:
         """
         Sync internal method to add the result to the cache
         """
+        kwargs.update(
+            convert_args_to_kwargs(result, self.original_function, kwargs, args)
+        )
         if litellm.cache is None:
             return
 
-        args = args or ()
         if self._should_store_result_in_cache(
             original_function=self.original_function, kwargs=kwargs
         ):
-            litellm.cache.add_cache(result, *args, **kwargs)
+            litellm.cache.add_cache(result, **kwargs)
 
         return
 
@@ -772,7 +784,7 @@ class LLMCachingHandler:
 
         # if a complete_streaming_response is assembled, add it to the cache
         if complete_streaming_response is not None:
-            await self._async_set_cache(
+            await self.async_set_cache(
                 result=complete_streaming_response,
                 original_function=self.original_function,
                 kwargs=self.request_kwargs,
@@ -795,7 +807,7 @@ class LLMCachingHandler:
 
         # if a complete_streaming_response is assembled, add it to the cache
         if complete_streaming_response is not None:
-            self._sync_set_cache(
+            self.sync_set_cache(
                 result=complete_streaming_response,
                 kwargs=self.request_kwargs,
             )
@@ -849,3 +861,26 @@ class LLMCachingHandler:
             additional_args=None,
             stream=kwargs.get("stream", False),
         )
+
+
+def convert_args_to_kwargs(
+    result: Any,
+    original_function: Callable,
+    kwargs: Dict[str, Any],
+    args: Optional[Tuple[Any, ...]] = None,
+) -> Dict[str, Any]:
+    # Get the signature of the original function
+    signature = inspect.signature(original_function)
+
+    # Get parameter names in the order they appear in the original function
+    param_names = list(signature.parameters.keys())
+
+    # Create a mapping of positional arguments to parameter names
+    args_to_kwargs = {}
+    if args:
+        for index, arg in enumerate(args):
+            if index < len(param_names):
+                param_name = param_names[index]
+                args_to_kwargs[param_name] = arg
+
+    return args_to_kwargs
