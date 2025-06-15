@@ -153,8 +153,10 @@ const sidebars = {
               "proxy/guardrails/aim_security",
               "proxy/guardrails/aporia_api",
               "proxy/guardrails/bedrock",
+              "proxy/guardrails/lasso_security",
               "proxy/guardrails/guardrails_ai",
               "proxy/guardrails/lakera_ai",
+              "proxy/guardrails/pangea",
               "proxy/guardrails/pii_masking_v2",
               "proxy/guardrails/secret_detection",
               "proxy/guardrails/custom_guardrail",
@@ -339,7 +341,14 @@ const sidebars = {
         "providers/codestral",
         "providers/cohere",
         "providers/anyscale",
-        "providers/huggingface",
+        {
+          type: "category",
+          label: "HuggingFace",
+          items: [
+            "providers/huggingface",
+            "providers/huggingface_rerank",
+          ]
+        },
         "providers/databricks",
         "providers/deepgram",
         "providers/watsonx",
@@ -470,6 +479,7 @@ const sidebars = {
       items: [
         "observability/agentops_integration",
         "observability/langfuse_integration",
+        "observability/langfuse_otel_integration",
         "observability/lunary_integration",
         "observability/deepeval_integration",
         "observability/mlflow",
