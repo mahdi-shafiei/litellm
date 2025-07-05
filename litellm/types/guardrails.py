@@ -29,6 +29,10 @@ class SupportedGuardrailIntegrations(Enum):
     HIDE_SECRETS = "hide-secrets"
     AIM = "aim"
     PANGEA = "pangea"
+    LASSO = "lasso"
+    PANW_PRISMA_AIRS = "panw_prisma_airs"
+    AZURE_PROMPT_SHIELD = "azure/prompt_shield"
+    AZURE_TEXT_MODERATIONS = "azure/text_moderations"
 
 
 class Role(Enum):
@@ -323,15 +327,19 @@ class LakeraV2GuardrailConfigModel(BaseModel):
         description="Whether to include developer information in the response",
     )
 
-class LitellmParams(
-    PresidioConfigModel,
-    BedrockGuardrailConfigModel,
-    LakeraV2GuardrailConfigModel,
-):
-    guardrail: str = Field(description="The type of guardrail integration to use")
-    mode: Union[str, List[str]] = Field(
-        description="When to apply the guardrail (pre_call, post_call, during_call, logging_only)"
+
+class LassoGuardrailConfigModel(BaseModel):
+    """Configuration parameters for the Lasso guardrail"""
+
+    lasso_user_id: Optional[str] = Field(
+        default=None, description="User ID for the Lasso guardrail"
     )
+    lasso_conversation_id: Optional[str] = Field(
+        default=None, description="Conversation ID for the Lasso guardrail"
+    )
+
+
+class BaseLitellmParams(BaseModel):  # works for new and patch update guardrails
     api_key: Optional[str] = Field(
         default=None, description="API key for the guardrail service"
     )
@@ -371,14 +379,36 @@ class LitellmParams(
 
     # pangea params
     pangea_input_recipe: Optional[str] = Field(
-        default=None,
-        description="Recipe for input (LLM request)"
+        default=None, description="Recipe for input (LLM request)"
     )
 
     pangea_output_recipe: Optional[str] = Field(
-        default=None,
-        description="Recipe for output (LLM response)"
+        default=None, description="Recipe for output (LLM response)"
     )
+
+    model_config = ConfigDict(extra="allow", protected_namespaces=())
+
+
+class LitellmParams(
+    PresidioConfigModel,
+    BedrockGuardrailConfigModel,
+    LakeraV2GuardrailConfigModel,
+    LassoGuardrailConfigModel,
+    BaseLitellmParams,
+):
+    guardrail: str = Field(description="The type of guardrail integration to use")
+    mode: Union[str, List[str]] = Field(
+        description="When to apply the guardrail (pre_call, post_call, during_call, logging_only)"
+    )
+
+    def __init__(self, **kwargs):
+        default_on = kwargs.pop("default_on", None)
+        if default_on is not None:
+            kwargs["default_on"] = default_on
+        else:
+            kwargs["default_on"] = False
+        super().__init__(**kwargs)
+
 
 class Guardrail(TypedDict, total=False):
     guardrail_id: Optional[str]
@@ -404,26 +434,10 @@ class DynamicGuardrailParams(TypedDict):
     extra_body: Dict[str, Any]
 
 
-class GuardrailInfoLiteLLMParamsResponse(BaseModel):
-    """The returned LiteLLM Params object for /guardrails/list"""
-
-    guardrail: str
-    mode: Union[str, List[str]]
-    default_on: Optional[bool] = False
-    pii_entities_config: Optional[Dict[PiiEntityType, PiiAction]] = None
-
-    def __init__(self, **kwargs):
-        default_on = kwargs.get("default_on")
-        if default_on is None:
-            default_on = False
-
-        super().__init__(**kwargs)
-
-
 class GuardrailInfoResponse(BaseModel):
     guardrail_id: Optional[str] = None
     guardrail_name: str
-    litellm_params: Optional[GuardrailInfoLiteLLMParamsResponse] = None
+    litellm_params: Optional[BaseLitellmParams] = None
     guardrail_info: Optional[Dict] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -464,12 +478,7 @@ class ApplyGuardrailResponse(BaseModel):
     response_text: str
 
 
-class PatchGuardrailLitellmParams(BaseModel):
-    default_on: Optional[bool] = None
-    pii_entities_config: Optional[Dict[PiiEntityType, PiiAction]] = None
-
-
 class PatchGuardrailRequest(BaseModel):
     guardrail_name: Optional[str] = None
-    litellm_params: Optional[PatchGuardrailLitellmParams] = None
+    litellm_params: Optional[BaseLitellmParams] = None
     guardrail_info: Optional[Dict[str, Any]] = None
